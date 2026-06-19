@@ -1,10 +1,7 @@
 [package]
 name = "zcash-android-wallet-sdk"
-version = "2.6.4"
-authors = [
-    "Jack Grigg <jack@z.cash>",
-    "Kevin Gorham <kevin.gorham@z.cash>",
-]
+version = "2.6.5"
+authors = ["Jack Grigg <jack@z.cash>", "Kevin Gorham <kevin.gorham@z.cash>"]
 description = "JNI backend for the Android wallet SDK"
 publish = false
 edition = "2024"
@@ -30,7 +27,12 @@ zcash_client_backend = { version = "0.23", features = [
     "unstable",
     "pczt",
 ] }
-zcash_client_sqlite = { version = "0.21", features = ["orchard", "transparent-inputs", "unstable", "serde"] }
+zcash_client_sqlite = { version = "0.21", features = [
+    "orchard",
+    "transparent-inputs",
+    "unstable",
+    "serde",
+] }
 zcash_note_encryption = "0.4.1"
 zcash_primitives = "0.28"
 zcash_proofs = "0.28"
@@ -81,7 +83,9 @@ libc = "0.2"
 # Tor
 fs-mistrust = "0.12"
 tor-rtcompat = "0.35"
-rust_decimal = { version = "1", default-features = false, features = ["c-repr"] }
+rust_decimal = { version = "1", default-features = false, features = [
+    "c-repr",
+] }
 # - The "static" feature is required for the "compression" default feature of arti-client.
 xz2 = { version = "0.1", features = ["static"] }
 
@@ -131,6 +135,20 @@ zcash_voting = { version = "=0.11.0", default-features = false, features = [
 #zcash_primitives = { git = "https://github.com/zcash/librustzcash", branch = "main" }
 #zcash_proofs = { git = "https://github.com/zcash/librustzcash", branch = "main" }
 #zcash_protocol = { git = "https://github.com/zcash/librustzcash", branch = "main" }
+
+# Patch zcash_client_sqlite to include fix for InvalidParameterName in
+# delete_account https://github.com/zcash/librustzcash/pull/2426, as well as
+# all other librustzcash crates affected by this patch.
+[patch.crates-io]
+pczt = { git = "https://github.com/zcash/librustzcash", rev = "d06735590ecdb9969a21cfeceed6dd24e3f56e38" }
+zcash_address = { git = "https://github.com/zcash/librustzcash", rev = "d06735590ecdb9969a21cfeceed6dd24e3f56e38" }
+zcash_client_backend = { git = "https://github.com/zcash/librustzcash", rev = "d06735590ecdb9969a21cfeceed6dd24e3f56e38" }
+zcash_client_sqlite = { git = "https://github.com/zcash/librustzcash", rev = "d06735590ecdb9969a21cfeceed6dd24e3f56e38" }
+zcash_keys = { git = "https://github.com/zcash/librustzcash", rev = "d06735590ecdb9969a21cfeceed6dd24e3f56e38" }
+zcash_primitives = { git = "https://github.com/zcash/librustzcash", rev = "d06735590ecdb9969a21cfeceed6dd24e3f56e38" }
+zcash_proofs = { git = "https://github.com/zcash/librustzcash", rev = "d06735590ecdb9969a21cfeceed6dd24e3f56e38" }
+zcash_protocol = { git = "https://github.com/zcash/librustzcash", rev = "d06735590ecdb9969a21cfeceed6dd24e3f56e38" }
+zcash_transparent = { package = "zcash_transparent", git = "https://github.com/zcash/librustzcash", rev = "d06735590ecdb9969a21cfeceed6dd24e3f56e38" }
 
 [lib]
 name = "zcashwalletsdk"
