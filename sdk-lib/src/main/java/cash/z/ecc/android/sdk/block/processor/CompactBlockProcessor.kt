@@ -100,6 +100,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.filterIsInstance
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
@@ -206,6 +207,12 @@ class CompactBlockProcessor internal constructor(
 
     private val processingMutex = Mutex()
 
+    /**
+     * Privacy gate, see [pause]. Independent of [state] on purpose: it is not a lifecycle state, it only decides
+     * whether the processor loop may start its next unit of work.
+     */
+    private val _isPaused = MutableStateFlow(false)
+
     private val decryptSemaphore = Mutex()
 
     /**
@@ -222,6 +229,12 @@ class CompactBlockProcessor internal constructor(
      * to poll.
      */
     val state = _state.asStateFlow()
+
+    /**
+     * Whether the processor is currently gated by [pause]. Note that [state] does not change while paused, see
+     * [pause] for the reasoning.
+     */
+    val isPaused = _isPaused.asStateFlow()
 
     /**
      * The flow of the general progress values so that a wallet can monitor how much downloading remains
@@ -303,6 +316,10 @@ class CompactBlockProcessor internal constructor(
         // Using do/while makes it easier to execute exactly one loop which helps with testing this processor quickly
         // (because you can start and then immediately set isStopped=true to always get precisely one loop)
         do {
+            // Honour the privacy gate before touching the network for a new sync cycle (chain tip fetch, block
+            // download, transaction resubmission). Returns immediately when not paused or once stopped.
+            awaitResumed()
+
             retryWithBackoff(
                 onErrorListener = ::onProcessorError,
                 onErrorResolved = ::onProcessorErrorResolved,
@@ -523,6 +540,42 @@ class CompactBlockProcessor internal constructor(
     }
 
     /**
+     * Closes the privacy gate: the processor finishes the batch it is currently downloading/scanning (at most one
+     * more batch of blocks), then does not start another sync cycle, poll, or transaction resubmission until
+     * [resume]. Idempotent and safe to call from any thread.
+     *
+     * [state] is deliberately left untouched. [State.Stopped] is terminal for the [cash.z.ecc.android.sdk.SdkSynchronizer]
+     * (it tears down mempool observing and is reported to apps as `STOPPED`), and adding a new [State] subclass would
+     * break every exhaustive `when` in SDK consumers. So a processor paused while idle keeps reporting
+     * [State.Synced], and one paused mid-scan keeps reporting [State.Syncing] (the scan is genuinely not complete);
+     * balances, heights and progress stay live and truthful to the local DB. Observe [isPaused] for the gate itself.
+     */
+    fun pause() {
+        _isPaused.update { true }
+    }
+
+    /**
+     * Reopens the gate closed by [pause]. The processor loop wakes up and immediately runs a full cycle (chain tip
+     * fetch, suggested ranges, download/scan). Idempotent and safe to call from any thread.
+     */
+    fun resume() {
+        _isPaused.update { false }
+    }
+
+    /**
+     * Suspends while [isPaused] is true. Returns immediately once resumed, or once the processor is [State.Stopped]
+     * so that a paused processor can still be shut down without leaking the loop.
+     */
+    internal suspend fun awaitResumed() {
+        if (!_isPaused.value) {
+            return
+        }
+        Twig.info { "Block processor paused, waiting for resume" }
+        combine(_isPaused, _state) { paused, state -> !paused || state is State.Stopped }.first { it }
+        Twig.info { "Block processor resumed" }
+    }
+
+    /**
      * Sets the state to [State.Stopped], which causes the processor loop to exit.
      */
     suspend fun stop() {
@@ -740,9 +793,13 @@ class CompactBlockProcessor internal constructor(
                     }
 
                     else -> {
-                        // First, check the time and refresh the prepare phase inputs, if needed
+                        // First, check the time and refresh the prepare phase inputs, if needed. A pause request
+                        // takes the same exit: the in-flight batch has completed, and restarting the cycle brings
+                        // the loop back to the [awaitResumed] gate, from where a later resume re-runs the
+                        // preparation phase (fresh chain tip) instead of continuing with stale ranges.
                         val currentTimeMillis = System.currentTimeMillis()
-                        if (shouldRefreshPreparation(
+                        if (_isPaused.value ||
+                            shouldRefreshPreparation(
                                 lastPreparationTime,
                                 currentTimeMillis,
                                 SYNCHRONIZATION_RESTART_TIMEOUT
@@ -822,7 +879,22 @@ class CompactBlockProcessor internal constructor(
                     lastValidHeight = lastValidHeight
                 )
         ) {
-            is UpdateChainTipResult.Success -> { // Let's continue to the next step
+            is UpdateChainTipResult.Success -> {
+                // Re-read the wallet summary as soon as the Rust layer has learned about a new chain tip.
+                //
+                // `updateChainTip` queues a ChainTip scan range and, until that range has been scanned, Rust
+                // treats every not-yet-stabilized note in the tip shard as unselectable. `walletBalances` was
+                // previously refreshed only at processor start and after each scanned batch, so between this call
+                // and the completion of the first batch (the whole download/scan window - minutes over Tor, or
+                // when far behind the tip) the app kept showing the previous, optimistic spendable balance while
+                // `proposeTransfer` was already being refused with "Insufficient balance (have 0 ...)". Refreshing
+                // here makes the published balance match the DB's actual selectability as soon as the tip moves.
+                //
+                // The refresh is skipped when the tip has not moved since the last cycle: nothing can have changed
+                // and the idle 20 s poll loop must not re-emit progress/balances for no reason.
+                if (chainTip != _networkHeight.value) {
+                    refreshWalletSummary()
+                }
             }
 
             is UpdateChainTipResult.Failure -> {

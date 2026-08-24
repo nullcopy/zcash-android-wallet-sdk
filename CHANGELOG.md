@@ -132,6 +132,20 @@ and this library adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `false`, or relied on the parameter's `false` default, need an SDK build with the flag off.
 
 ### Fixed
+- `Synchronizer.walletBalances` no longer reports a stale, optimistic spendable balance for the whole
+  download/scan window after the chain tip moves. `CompactBlockProcessor` now re-reads the wallet
+  summary right after a successful `updateChainTip`, so the published balance matches what the
+  Rust layer will actually let `proposeTransfer` select. Previously the summary was only refreshed
+  at processor start and after each scanned batch, so a wallet could show a correct-looking balance
+  while `proposeTransfer` was already failing with "Insufficient balance (have 0 ...)" - for minutes
+  over Tor, or whenever the wallet was far behind the tip.
+- `SdkSynchronizer.pause()`/`resume()` are no longer no-ops. They now gate `CompactBlockProcessor`:
+  the processor finishes its in-flight batch and then starts no further sync cycle, poll or
+  transaction resubmission until `resume()`, which restarts polling with a fresh chain tip. This
+  makes `WalletCoordinator`'s `isSyncBlocked` migration privacy gate effective on builds that
+  drive the classic synchronizer (`IS_SLIPSTREAM_ENABLED=false`). `status` keeps reporting the
+  processor's real state while paused; the new `CompactBlockProcessor.isPaused` flow exposes the
+  gate itself.
 - The native library no longer links two copies of the Zcash crate graph (#2056). `zcash_voting`
   moved from its crates.io `=0.11.0` pin to `2.0.0-rc.3`. The old pin
   required the pre-Ironwood librustzcash family, which cargo resolved *alongside* this crate's

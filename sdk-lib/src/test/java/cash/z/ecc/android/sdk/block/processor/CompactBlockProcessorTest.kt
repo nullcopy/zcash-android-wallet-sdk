@@ -23,8 +23,10 @@ import co.electriccoin.lightwallet.client.model.LightWalletEndpoint
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.mockito.Mockito.mock
 import org.mockito.Mockito.never
 import org.mockito.Mockito.verify
@@ -441,6 +443,63 @@ class CompactBlockProcessorTest {
         function.isAccessible = true
         function.callSuspend(this, blockHeight)
     }
+
+    @Test
+    fun await_resumed_returns_immediately_when_not_paused() {
+        runBlocking {
+            val processor = pausableProcessor()
+
+            assertFalse(processor.isPaused.value)
+            withTimeout(1_000) { processor.awaitResumed() }
+        }
+    }
+
+    @Test
+    fun pause_gates_the_processor_loop_until_resume() {
+        runBlocking {
+            val processor = pausableProcessor()
+
+            processor.pause()
+            processor.pause() // idempotent
+            assertTrue(processor.isPaused.value)
+
+            val gate = launch { processor.awaitResumed() }
+            delay(100)
+            assertTrue(gate.isActive, "awaitResumed must suspend while paused")
+
+            processor.resume()
+            withTimeout(1_000) { gate.join() }
+            assertFalse(processor.isPaused.value)
+
+            // Once resumed, the gate is open for the following cycles as well
+            withTimeout(1_000) { processor.awaitResumed() }
+        }
+    }
+
+    @Test
+    fun stop_unblocks_a_paused_processor() {
+        runBlocking {
+            val processor = pausableProcessor()
+
+            processor.pause()
+            val gate = launch { processor.awaitResumed() }
+            delay(100)
+            assertTrue(gate.isActive)
+
+            processor.stop()
+            withTimeout(1_000) { gate.join() }
+            assertEquals(CompactBlockProcessor.State.Stopped, processor.state.value)
+            // The gate itself is left closed: stopping is not resuming
+            assertTrue(processor.isPaused.value)
+        }
+    }
+
+    private fun pausableProcessor() =
+        processor(
+            repository = mock(DerivedDataRepository::class.java),
+            txManager = mock(OutboundTransactionManager::class.java),
+            pendingSubmitPlanStore = PendingSubmitPlanStore()
+        )
 
     private fun processor(
         repository: DerivedDataRepository,

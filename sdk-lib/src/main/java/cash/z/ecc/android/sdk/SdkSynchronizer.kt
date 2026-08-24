@@ -662,12 +662,17 @@ class SdkSynchronizer private constructor(
         }
     }
 
-    // Migration sync-pause is only wired for the Slipstream engine; the legacy processor path
-    // is never active in a build that ships Slipstream. Kept as a no-op so the
-    // CloseableSynchronizer contract stays total.
-    override fun pause() = Unit
+    // Builds with `IS_SLIPSTREAM_ENABLED=false` drive this synchronizer through `WalletCoordinator`, so the
+    // migration sync-pause must gate the block processor here too (it used to be a no-op on this engine).
+    // The processor finishes its in-flight batch, then idles at its gate until [resume]; `status` keeps
+    // reporting the processor's real state, see [CompactBlockProcessor.pause].
+    override fun pause() {
+        processor.pause()
+    }
 
-    override fun resume() = Unit
+    override fun resume() {
+        processor.resume()
+    }
 
     //
     // Storage APIs
